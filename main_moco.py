@@ -21,7 +21,8 @@ import torch.utils.data.distributed
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
-
+from utils import backup_code,is_main_process
+from torch.utils.tensorboard import SummaryWriter
 import moco.loader
 import moco.builder
 import moco.infodropout as infodropout
@@ -89,6 +90,8 @@ parser.add_argument('--moco-m', default=0.999, type=float,
                     help='moco momentum of updating key encoder (default: 0.999)')
 parser.add_argument('--moco-t', default=0.07, type=float,
                     help='softmax temperature (default: 0.07)')
+parser.add_argument('--output',type = str, default='output',help = 'output_checkpoint_dir')
+parser.add_argument('--checkpoint_interval',type=int,default=10)
 
 # options for moco v2
 parser.add_argument('--mlp', action='store_true',
@@ -101,6 +104,28 @@ parser.add_argument('--cos', action='store_true',
 
 def main():
     args = parser.parse_args()
+
+    if os.path.exists(args.output):
+        print('an existed dir, enter e or exit to cancel the command, or anything else to continue')
+        st = input()
+        if st in ['e','exit']:
+            exit()
+    else:
+        os.mkdir(args.output)
+    
+    if not os.path.exists(os.path.join(args.output,'log')):
+        os.mkdir(os.path.join(args.output,'log'))
+    if not os.path.exists(os.path.join(args.output,'backup')):
+        os.mkdir(os.path.join(args.output,'backup'))
+    if not os.path.exists('history'):
+        os.mkdir('history')
+    now_time = time.strftime("%a-%b-%d-%H-%M-%S-%Y", time.localtime()) 
+    if not os.path.exists(os.path.join('history',now_time)):
+        os.mkdir(os.path.join('history',now_time))
+    
+    backup_code('./',os.path.join(args.output,'backup'))
+    backup_code('./',os.path.join('history',now_time))
+
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -135,6 +160,10 @@ def main():
 
 
 def main_worker(gpu, ngpus_per_node, args):
+    if is_main_process(args):
+        writer = SummaryWriter(os.path.join(args.output,'log'))
+    else:
+        writer = None
     args.gpu = gpu
 
     # suppress printing if not master
@@ -264,7 +293,7 @@ def main_worker(gpu, ngpus_per_node, args):
         adjust_learning_rate(optimizer, epoch, args)
 
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, args)
+        train(train_loader, model, criterion, optimizer, epoch, args,writer)
 
         if not args.multiprocessing_distributed or (args.multiprocessing_distributed
                 and args.rank % ngpus_per_node == 0):
@@ -273,10 +302,19 @@ def main_worker(gpu, ngpus_per_node, args):
                 'arch': args.arch,
                 'state_dict': model.state_dict(),
                 'optimizer' : optimizer.state_dict(),
-            }, is_best=False, filename='checkpoint_{:04d}.pth.tar'.format(epoch))
+            }, is_best=False, filename= os.path.join(args.output,'last_model.pth.tar'.format(epoch)))
+
+        if (epoch%args.checkpoint_interval == args.checkpoint_interval-1) and (not args.multiprocessing_distributed or (args.multiprocessing_distributed
+                and args.rank % ngpus_per_node == 0)):
+            save_checkpoint({
+                'epoch': epoch + 1,
+                'arch': args.arch,
+                'state_dict': model.state_dict(),
+                'optimizer' : optimizer.state_dict(),
+            }, is_best=False, filename=os.path.join(args.output,'checkpoint_{:04d}.pth.tar'.format(epoch)))
 
 
-def train(train_loader, model, criterion, optimizer, epoch, args):
+def train(train_loader, model, criterion, optimizer, epoch, args,writer:SummaryWriter):
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
@@ -321,7 +359,10 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
         if i % args.print_freq == 0:
             progress.display(i)
-
+    if writer is not None:
+        writer.add_scalar('loss',losses.avg,epoch)
+        writer.add_scalar('top1',top1.avg,epoch)
+        writer.add_scalar('top5',top5.avg,epoch)
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
     torch.save(state, filename)
