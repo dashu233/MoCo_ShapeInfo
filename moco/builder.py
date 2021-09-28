@@ -1,6 +1,7 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 import torch
 import torch.nn as nn
+import infodropout
 
 
 class MoCo(nn.Module):
@@ -25,6 +26,9 @@ class MoCo(nn.Module):
         # num_classes is the output fc dimension
         self.encoder_q = base_encoder(num_classes=dim)
         self.encoder_k = base_encoder(num_classes=dim)
+        for m in self.encoder_q:
+            if isinstance(m,infodropout.Info_Dropout):
+                m.finetune_wo_infodrop = True
 
         if mlp:  # hack: brute-force replacement
             dim_mlp = self.encoder_q.fc.weight.shape[1]
